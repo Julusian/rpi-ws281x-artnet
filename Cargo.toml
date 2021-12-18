@@ -6,3 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+
+rs_ws281x = "0.4.2"
+# artnet_protocol = "0.3.0"
+artnet_protocol =  { git = "https://github.com/Trangar/artnet_protocol", rev = "3beae43b970c770bfdd3750fb54e17236f600cd8" }
