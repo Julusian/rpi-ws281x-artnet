@@ -1,13 +1,10 @@
-use artnet_protocol::ArtCommand;
-use artnet_protocol::PortAddress;
-use rs_ws281x::RawColor;
-use rs_ws281x::{ChannelBuilder, ControllerBuilder, StripType};
-use std::net::UdpSocket;
-use std::sync::Arc;
-use std::sync::Mutex;
+use artnet_protocol::{ArtCommand, PollReply, PortAddress, ARTNET_PROTOCOL_VERSION};
+use nix::sys::socket::SockAddr;
+use rs_ws281x::{ChannelBuilder, ControllerBuilder, RawColor, StripType};
+use std::net::{IpAddr, UdpSocket};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 // TODO - these should be configurable
 const BYTES_PER_PIXEL: usize = 3;
@@ -15,6 +12,10 @@ const PIXELS_PER_UNIVERSE: usize = 170;
 const UNIVERSE_COUNT: u8 = 3;
 
 const EMPTY_COLOR: RawColor = [0, 0, 0, 0];
+
+const ARTNET_PORT: u16 = 6454;
+const ARTNET_SHORTNAME: &[u8; 18] = b"Lumastar Pixie\0\0\0\0";
+const ARTNET_LONGNAME: &[u8; 64] = b"Lumastar Pixie Driver\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
 #[derive(Clone)]
 struct PixelData {
@@ -34,7 +35,8 @@ impl Default for PixelData {
 
 fn start_artnet_thread(shared_data: Arc<Mutex<PixelData>>) -> std::thread::JoinHandle<()> {
     thread::spawn(move || {
-        let socket = UdpSocket::bind(("0.0.0.0", 6454)).expect("Could not bind socket for artnet");
+        let socket =
+            UdpSocket::bind(("0.0.0.0", ARTNET_PORT)).expect("Could not bind socket for artnet");
         match socket.set_nonblocking(true) {
             Ok(_) => println!("Activated non-blocking mode"),
             Err(e) => println!("Could not activate non-blocking mode: {}", e),
@@ -45,12 +47,61 @@ fn start_artnet_thread(shared_data: Arc<Mutex<PixelData>>) -> std::thread::JoinH
         let mut frames = 0;
         loop {
             let mut buffer = [0u8; 1024];
-            if let Ok((length, _addr)) = socket.recv_from(&mut buffer) {
+            if let Ok((length, addr)) = socket.recv_from(&mut buffer) {
                 let command = ArtCommand::from_buffer(&buffer[..length])
                     .expect("Could not parse artnet command");
 
                 // println!("Received artnet data: {:?}", command);
-                if let ArtCommand::Output(output) = command {
+                if let ArtCommand::Poll(_poll) = command {
+                    let addrs = nix::ifaddrs::getifaddrs().unwrap();
+                    for ifaddr in addrs {
+                        if let Some(ifaddr2) = &ifaddr.address {
+                            if let SockAddr::Inet(netaddr) = ifaddr2 {
+                                if let IpAddr::V4(v4addr) = netaddr.to_std().ip() {
+                                    let command = ArtCommand::PollReply(Box::new(PollReply {
+                                        address: v4addr,
+                                        port: ARTNET_PORT,
+                                        version: ARTNET_PROTOCOL_VERSION,
+                                        port_address: [0, 1],
+                                        oem: [0, 0],
+                                        ubea_version: 0,
+                                        status_1: 0,
+                                        esta_code: 0,
+                                        short_name: ARTNET_SHORTNAME.clone(),
+                                        long_name: ARTNET_LONGNAME.clone(),
+                                        node_report: [
+                                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                        ],
+                                        num_ports: [0, 0],
+                                        port_types: [0, 0, 0, 0], // TODO?
+                                        good_input: [0, 0, 0, 0],
+                                        good_output: [0, 0, 0, 0],
+                                        swin: [1, 2, 3, 4],
+                                        swout: [0, 0, 0, 0],
+                                        sw_video: 0,
+                                        sw_macro: 0,
+                                        sw_remote: 0,
+                                        spare: [0, 0, 0],
+                                        style: 0,
+                                        mac: [0, 0, 0, 0, 0, 0],
+                                        bind_ip: [0, 0, 0, 0],
+                                        bind_index: 0,
+                                        status_2: 0,
+                                        filler: [
+                                            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                            0, 0, 0, 0, 0, 0, 0, 0,
+                                        ],
+                                    }));
+                                    let bytes = command.write_to_buffer().unwrap();
+                                    socket.send_to(&bytes, &addr).unwrap();
+                                }
+                            }
+                        }
+                    }
+                } else if let ArtCommand::Output(output) = command {
                     frames += 1;
                     if start.elapsed().as_secs() >= 1 {
                         println!("{} fps", frames);
@@ -132,7 +183,7 @@ fn start_ws281x_thread(shared_data: Arc<Mutex<PixelData>>) -> std::thread::JoinH
                 ChannelBuilder::new()
                     .pin(12)
                     .count(PIXELS_PER_UNIVERSE as i32 * UNIVERSE_COUNT as i32)
-                    .strip_type(StripType::Ws2811Rgb)
+                    .strip_type(StripType::Ws2811Bgr)
                     .brightness(255)
                     .build(),
             )
