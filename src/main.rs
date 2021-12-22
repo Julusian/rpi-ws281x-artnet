@@ -130,9 +130,9 @@ fn start_artnet_thread(shared_data: Arc<Mutex<PixelData>>) -> std::thread::JoinH
                         };
 
                         let mut new_pixels = vec![EMPTY_COLOR; PIXELS_PER_UNIVERSE];
-                        for i in 0..(PIXELS_PER_UNIVERSE - 1) {
+                        for i in 0..PIXELS_PER_UNIVERSE {
                             let o = i * BYTES_PER_PIXEL;
-                            if o >= raw_data.len() || (o + BYTES_PER_PIXEL) > raw_data.len() {
+                            if (o + BYTES_PER_PIXEL) >= raw_data.len() {
                                 // Will overflow the source array
                                 break;
                             }
